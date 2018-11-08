@@ -1,2 +1,1 @@
-__version__ = "0.0.2"
-from . import index
+from .index import TypedClass, TypeDef, TypedClassStrict, TypedClassJson

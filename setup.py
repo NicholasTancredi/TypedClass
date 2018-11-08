@@ -5,7 +5,7 @@ with open("README.md", "r") as fh:
 
 setup(
     name='TypedClass',
-    version='0.0.3',
+    version='0.0.4',
     description='Extend other classes to give them type checking via annotations',
     url='https://github.com/w0251251/TypedClass',
     author='Nicholas Tancredi',
