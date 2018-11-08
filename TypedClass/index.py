@@ -9,7 +9,7 @@ TypeDefTypeof = (Type, Tuple[Type])
 class TypeDef:
     """
         TypeDef
-        Used as a advanced type hint combined with TypedClass
+        Used as an advanced type hint combined with TypedClass
         arguments:
             typeof: must be a "TypeDef", "type" or "tuple" of "types",
                     which is passed to "isinstance" for type validation.
@@ -19,13 +19,19 @@ class TypeDef:
             validate_fn: A function that takes a single argument, the value,
                         and returns a boolean indicating if the value is valid.
                         Example: os.path.isfile is a useful "validate_fn"
+            convert: should the value be converted from its value to the type it should be.
+                    Used when getting something like a json dict that will be a dictionary version
+                    of the class and you want to pass it to the __init__.
+                    For instance if typeof = CorrectType, then
+                        CorrectType({ 'some': 'value' })
         example input:
             TypeDef(
                 typeof=str
                 required=True
                 immutable=True
                 choices=['a.txt', 'b.txt']
-                validate_fn=os.path.isfile
+                validate_fn=os.path.isfile,
+                convert=True
             )
         NOTE: No need to use this method if you are not setting one of the optional values.
         Instead of:
@@ -35,18 +41,20 @@ class TypeDef:
         TypedClass will treat them the same.
     """
     typeof: TypeDefTypeof
-    required: bool = False
-    immutable: bool = False
+    required: bool = None
+    immutable: bool = None
     choices: list = None
     validate_fn: Callable = None
+    convert: bool = None
 
     def __init__(
         self,
         typeof: TypeDefTypeof,
-        required: bool = False,
-        immutable: bool = False,
+        required: bool = None,
+        immutable: bool = None,
         choices: list = None,
         validate_fn: Callable = None,
+        convert: bool = None,
     ):
         try:
             isinstance('', typeof)
@@ -56,17 +64,19 @@ class TypeDef:
                 but a type of "{}" was provided, with the exact value of "{}"
             """.format(type(typeof), typeof))
 
-        if not isinstance(required, bool):
-            raise TypeError("""
-                TypeDef "required" must be a "bool",
-                but a type of "{}" was provided, with the exact value of "{}"
-            """.format(type(required), required))
+        if required is not None:
+            if not isinstance(required, bool):
+                raise TypeError("""
+                    TypeDef "required" must be a "bool",
+                    but a type of "{}" was provided, with the exact value of "{}"
+                """.format(type(required), required))
 
-        if not isinstance(immutable, bool):
-            raise TypeError("""
-                TypeDef "immutable" must be a "bool",
-                but a type of "{}" was provided, with the exact value of "{}"
-            """.format(type(immutable), immutable))
+        if immutable is not None:
+            if not isinstance(immutable, bool):
+                raise TypeError("""
+                    TypeDef "immutable" must be a "bool",
+                    but a type of "{}" was provided, with the exact value of "{}"
+                """.format(type(immutable), immutable))
 
         if choices is not None:
             if not isinstance(choices, list):
@@ -98,11 +108,19 @@ class TypeDef:
                     but "{}" arguments were found, with the exact value of "{}"
                 """.format(arg_length, list(validate_fn_signature.parameters)))
 
+        if convert is not None:
+            if not isinstance(convert, bool):
+                raise TypeError("""
+                    TypeDef "convert" must be a "bool",
+                    but a type of "{}" was provided, with the exact value of "{}"
+                """.format(type(convert), convert))
+
         self.typeof = typeof
         self.required = required
         self.immutable = immutable
         self.choices = choices
         self.validate_fn = validate_fn
+        self.convert = convert
 
 
 class TypedClass:
@@ -112,6 +130,19 @@ class TypedClass:
         @property
             attributes: Class annotated attributes as a dict.
             annotations: Safe access to __annotations__, with custom error message.
+            dict: Used to get a pure dict with no nested classes, only there attributes as dicts.
+                  Useful when creating json.
+
+        If this throws from invalid input you can get an AttributeError or TypeError
+        except:
+            AttributeError:
+                Missing required attributes
+                Argument or attribute with missing annotations
+                Immutable attribute
+            TypeError:
+                Invalid type
+                Invalid choice
+                Failed validate_fn
     """
     def __init__(self, **kwargs):
         self.__attributes_with_defaults_keys = []
@@ -160,6 +191,9 @@ class TypedClass:
         annotation_value = self.annotations[key]
 
         if isinstance(annotation_value, TypeDef):
+            if annotation_value.convert:
+                value = annotation_value.typeof(value)
+
             if not isinstance(value, annotation_value.typeof):
                 raise TypeError("""
                     "{key}" must be a "{typeof}",
@@ -183,15 +217,8 @@ class TypedClass:
 
                     try:
                         getattr(self, key)
-                        print(self.__attributes_with_defaults_keys)
-                        print(key)
-                        print(key in self.__attributes_with_defaults_keys)
-                        print(hasattr(self, '_TypedClass__attributes_with_defaults_keys'))
                         if not hasattr(self, '_TypedClass__attributes_with_defaults_keys') or key not in self.__attributes_with_defaults_keys:
                             invalid_immutable = True
-                            # self.__attributes_with_defaults_keys = list(
-                            #     filter(lambda x: x != key, self.__attributes_with_defaults_keys)
-                            # )
                     except AttributeError:
                         pass
 
@@ -221,7 +248,6 @@ class TypedClass:
                         The attribute "{}" failed it's TypeDef "validate_fn".
                         A type of "{}" was provided, with the exact value of "{}"
                     """.format(key, type(value), value))
-
         elif not isinstance(value, annotation_value):
             if isinstance(annotation_value, tuple):
                 type_or_tuple_of_types = "must be one of"
@@ -275,19 +301,42 @@ class TypedClass:
                 """
             )
 
+    @property
+    def dict(self) -> dict:
+        """
+            If all nested values are TypedClass extended then
+            this can extract all attributes in nested classes for
+            usage in something like json input.
+            :return: dict
+        """
+        result = {}
+        for key in self.attributes:
+            value = self.attributes[key]
+            if hasattr(value, 'attributes'):
+                result[key] = value.attributes
+            else:
+                result[key] = value
+        return result
+
 
 class TypedClassStrict(TypedClass):
+    """
+        class TypedClassStrict
+        TypedClassStrict is an extension of TypedClass
+        with the required and immutable props set to "True" by default.
+        see TypedClass for details.
+    """
     def __init__(self, **kwargs):
         for key in self.annotations:
             annotation_value = self.annotations[key]
             if isinstance(annotation_value, TypeDef):
-                if not annotation_value.required:
-                    required = False
+                if annotation_value.required is not None:
+                    required = annotation_value.required
                 else:
                     required = True
 
-                if not annotation_value.immutable:
-                    immutable = False
+                if annotation_value.immutable is not None:
+                    immutable = annotation_value.immutable
                 else:
                     immutable = True
 
@@ -296,7 +345,8 @@ class TypedClassStrict(TypedClass):
                     required=required,
                     immutable=immutable,
                     choices=annotation_value.choices,
-                    validate_fn=annotation_value.validate_fn
+                    validate_fn=annotation_value.validate_fn,
+                    convert=annotation_value.convert
                 )
             else:
                 self.annotations[key] = TypeDef(
@@ -305,6 +355,40 @@ class TypedClassStrict(TypedClass):
                     immutable=True
                 )
         super().__init__(**kwargs)
+
+
+class TypedClassJson(TypedClassStrict):
+    """
+        class TypedClassJson
+        TypedClassJson is an extension of TypedClassStrict
+        with the "convert" props set to "True" by default.
+        see TypedClassStrict for details.
+    """
+    def __init__(self, input_json_obj):
+        json_obj = input_json_obj.copy()
+        for key in self.annotations:
+            annotation_value = self.annotations[key]
+            if isinstance(annotation_value, TypeDef):
+                if annotation_value.convert is not None:
+                    convert = annotation_value.convert
+                else:
+                    convert = True
+                self.annotations[key] = TypeDef(
+                    typeof=annotation_value.typeof,
+                    required=annotation_value.required,
+                    immutable=annotation_value.immutable,
+                    choices=annotation_value.choices,
+                    validate_fn=annotation_value.validate_fn,
+                    convert=convert
+                )
+            else:
+                self.annotations[key] = TypeDef(
+                    typeof=annotation_value,
+                    required=True,
+                    immutable=True,
+                    convert=True
+                )
+        super().__init__(**json_obj)
 
 
 TypeExampleAllOptions = (int, str, Callable, TypeDef, TypedClass)
@@ -352,6 +436,39 @@ class ExampleTypedClass(TypedClassStrict):
         )
 
 
+class ExampleJSONValidationUsageObj(TypedClassJson):
+    name: str
+    value: str
+    valid: bool
+
+
+class ExampleJSONValidationUsage(TypedClassStrict):
+    _id: int
+    sender: str
+    kind: str
+    # NOTE: The 'nested_obj' without help is not recommended,
+    # just here to show what you'd have to do without using `TypeDef`
+    nested_obj: ExampleJSONValidationUsageObj
+    nested_obj_with_help: TypeDef(
+        typeof=ExampleJSONValidationUsageObj,
+        convert=True
+    )
+
+    def __init__(self, input_json_obj):
+        json_obj = input_json_obj.copy()
+        if 'nested_obj' in json_obj:
+            json_obj['nested_obj'] = ExampleJSONValidationUsageObj(json_obj['nested_obj'])
+        super().__init__(**json_obj)
+
+
+class ExampleJSONValidationUsageWithHelperClass(TypedClassJson):
+    _id: int
+    sender: str
+    kind: str
+    nested_obj: ExampleJSONValidationUsageObj
+    nested_obj_with_help: ExampleJSONValidationUsageObj
+
+
 class TestTypedClass(unittest.TestCase):
     """
         class TestTypedClass
@@ -360,6 +477,29 @@ class TestTypedClass(unittest.TestCase):
         """
             def test
         """
+
+        example_json = {
+            '_id': 1,
+            'sender': 'nic',
+            'kind': 'message',
+            'nested_obj': {
+                'name': 'nested_obj',
+                'value': 'cool',
+                'valid': True
+            },
+            'nested_obj_with_help': {
+                'name': 'nested_obj_with_help',
+                'value': 'very cool',
+                'valid': True
+            }
+        }
+
+        json_output_example = ExampleJSONValidationUsage(example_json)
+        self.assertEqual(example_json, json_output_example.dict)
+
+        json_output_example_2 = ExampleJSONValidationUsageWithHelperClass(example_json)
+        self.assertEqual(example_json, json_output_example_2.dict)
+
         example = ExampleTypedClass(
             simple_type_hint=23,
             type_hint=23,
@@ -367,14 +507,11 @@ class TestTypedClass(unittest.TestCase):
             type_hint_with_default=24,
             all_options=23
         )
+        self.assertEqual(example.annotations, example.__annotations__)
         self.assertEqual(example.type_hint, 23)
         self.assertEqual(example.attributes['simple_type_hint'], 23)
 
 
 if __name__ == '__main__':
     unittest.main()
-
-
-def methodName(variableName: str) -> str:
-    return variableName
 
